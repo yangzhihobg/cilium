@@ -14,7 +14,7 @@ docker-image-dev: clean
 	@$(CURDIR)/../cp-dirs.sh $(BUILDDIR)
 	cp -v ../../../Dockerfile.dev $(BUILDDIR)/Dockerfile
 	find $(BUILDDIR) -name ".*" -prune ! -name ".git" -exec $(RM) -rf {} \;
-	docker build -q -t "cilium:$(DOCKER_IMAGE_TAG)" $(BUILDDIR)
+	docker build -q --memory=1GB -c 2 -t "cilium:$(DOCKER_IMAGE_TAG)" $(BUILDDIR)
 
 docker-image-dependencies: clean
 	mkdir -p $(BUILDDIR)
