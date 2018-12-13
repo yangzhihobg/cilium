@@ -74,7 +74,7 @@ const (
 	k8sAPIGroupNetworkingV1Core = "networking.k8s.io/v1::NetworkPolicy"
 	k8sAPIGroupIngressV1Beta1   = "extensions/v1beta1::Ingress"
 	k8sAPIGroupCiliumV2         = "cilium/v2::CiliumNetworkPolicy"
-	cacheSyncTimeout            = time.Duration(3 * time.Minute)
+	cacheSyncTimeout            = time.Duration(10 * time.Minute)
 )
 
 var (
@@ -276,7 +276,7 @@ func blockWaitGroupToSyncResources(waitGroup *sync.WaitGroup, informer cache.Con
 		// queued were serialized. This will make sure the all events received
 		// after the cached was synced were processed by the queue.
 		queue.Enqueue(func() error {
-			scopedLog.Debug("cache synced")
+			scopedLog.Info("cache synced")
 			waitGroup.Done()
 			return nil
 		}, serializer.NoRetry)
