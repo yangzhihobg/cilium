@@ -325,13 +325,13 @@ func (d *Daemon) EnableK8sWatcher(reSyncPeriod time.Duration) error {
 		return fmt.Errorf("Unable to create cilium network policy client: %s", err)
 	}
 
-	serKNPs := serializer.NewFunctionQueue(20)
-	serSvcs := serializer.NewFunctionQueue(20)
-	serEps := serializer.NewFunctionQueue(20)
-	serCNPs := serializer.NewFunctionQueue(20)
+	serKNPs := serializer.NewFunctionQueue(1024)
+	serSvcs := serializer.NewFunctionQueue(1024)
+	serEps := serializer.NewFunctionQueue(1024)
+	serCNPs := serializer.NewFunctionQueue(1024)
 	serPods := serializer.NewFunctionQueue(1024)
-	serNodes := serializer.NewFunctionQueue(20)
-	serNamespaces := serializer.NewFunctionQueue(20)
+	serNodes := serializer.NewFunctionQueue(1024)
+	serNamespaces := serializer.NewFunctionQueue(1024)
 
 	switch {
 	case networkPolicyV1VerConstr.Check(k8sServerVer):
