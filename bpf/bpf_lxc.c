@@ -49,6 +49,13 @@
 #include "lib/conntrack.h"
 #include "lib/encap.h"
 
+#define bpf_printk(fmt, ...)					\
+({								\
+	       char ____fmt[] = fmt;				\
+	       trace_printk(____fmt, sizeof(____fmt),	\
+				##__VA_ARGS__);			\
+})
+
 #define POLICY_ID ((LXC_ID << 16) | SECLABEL)
 
 #ifdef HAVE_LRU_MAP_TYPE
@@ -148,6 +155,8 @@ static inline int ipv6_l3_from_lxc(struct __sk_buff *skb,
 	union v6addr *daddr, orig_dip;
 	__u32 tunnel_endpoint = 0;
 	__u32 monitor = 0;
+
+	bpf_printk("ipv6 from lxc\n");
 
 	if (unlikely(!is_valid_lxc_src_ip(ip6)))
 		return DROP_INVALID_SIP;
@@ -332,8 +341,18 @@ skip_service_lookup:
 	/* The packet goes to a peer not managed by this agent instance */
 #ifdef ENCAP_IFINDEX
 	if (tunnel_endpoint) {
-		return encap_and_redirect_with_nodeid(skb, tunnel_endpoint,
-						      SECLABEL, monitor);
+		ret = encap_and_redirect_with_nodeid_from_lxc(skb, tunnel_endpoint, SECLABEL, monitor);
+		bpf_printk("tunnel_endpoint encap and redirect ipv6 %i\n", ret);
+		/* If not redirected noteable due to IPSEC then pass up to stack
+		 * for further processing.
+		 */
+		if (ret == IPSEC_ENDPOINT)
+			goto pass_to_stack;
+		/* This is either redirect by encap code or an error has occured
+		 * either way return and stack will consume skb.
+		 */
+		else
+			return ret;
 	} else {
 		/* FIXME GH-1391: Get rid of the initializer */
 		struct endpoint_key key = {};
@@ -351,11 +370,16 @@ skip_service_lookup:
 		key.ip6.p4 = 0;
 		key.family = ENDPOINT_KEY_IPV6;
 
-		ret = encap_and_redirect(skb, &key, SECLABEL, monitor, true);
-
-		/* Fall through if remote prefix was not found
-		 * (DROP_NO_TUNNEL_ENDPOINT) */
-		if (ret != DROP_NO_TUNNEL_ENDPOINT)
+		/* Three cases exist here either (a) the encap and redirect could
+		 * not find the tunnel so fallthrough to nat46 and stack, (b)
+		 * the packet needs IPSec encap so push skb to stack for encap, or
+		 * (c) packet was redirected to tunnel device so return.
+		 */
+		ret = encap_and_redirect(skb, &key, SECLABEL, monitor, false);
+		bpf_printk("encap and redirect ipv6 %i\n", ret);
+		if (ret == IPSEC_ENDPOINT)
+			goto pass_to_stack;
+		else if (ret != DROP_NO_TUNNEL_ENDPOINT)
 			return ret;
 	}
 #endif

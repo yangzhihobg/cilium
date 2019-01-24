@@ -48,6 +48,12 @@
 #include "lib/drop.h"
 #include "lib/encap.h"
 
+#define bpf_printk(fmt, ...)					\
+({								\
+	       char ____fmt[] = fmt;				\
+	       trace_printk(____fmt, sizeof(____fmt),	\
+				##__VA_ARGS__);			\
+})
 
 #if defined FROM_HOST && (defined ENABLE_IPV4 || defined ENABLE_IPV6)
 static inline int rewrite_dmac_to_host(struct __sk_buff *skb)
@@ -170,6 +176,7 @@ static inline int handle_ipv6(struct __sk_buff *skb, __u32 src_identity)
 	__u8 nexthdr;
 	__u32 secctx;
 
+	bpf_printk("handle_ipv6 identity %u mark %u\n", src_identity, skb->mark);
 	if (!revalidate_data(skb, &data, &data_end, &ip6))
 		return DROP_INVALID;
 
