@@ -15,7 +15,6 @@
 package main
 
 import (
-	"flag"
 	"fmt"
 	"os"
 	"os/signal"
@@ -30,6 +29,7 @@ import (
 	"github.com/cilium/cilium/pkg/logging/logfields"
 	"github.com/cilium/cilium/pkg/option"
 	"github.com/cilium/cilium/pkg/version"
+
 	gops "github.com/google/gops/agent"
 	"github.com/sirupsen/logrus"
 	"github.com/spf13/cobra"
@@ -84,10 +84,12 @@ func init() {
 	// Make sure glog (used by the client-go dependency) logs to stderr, as it
 	// will try to log to directories that may not exist in the cilium-operator
 	// container and cause the cilium-operator to exit.
-	flag.Set("logtostderr", "true")
+	//flag.Set("logtostderr", "true")
 	//flag.Set("log_dir", "nonexistent")
 	//pflag.CommandLine.AddGoFlagSet(flag.CommandLine)
 	//viper.BindPFlags(pflag.CommandLine)
+
+	//glog.Info("flags parsed? %s\n", flag.Parsed())
 
 	cobra.OnInitialize(initConfig)
 
@@ -115,8 +117,10 @@ func init() {
 	flags.Bool(option.DisableCiliumEndpointCRDName, false, "")
 	flags.MarkHidden(option.DisableCiliumEndpointCRDName)
 	option.BindEnv(option.DisableCiliumEndpointCRDName)
-	flags.AddGoFlagSet(flag.CommandLine)
+	//flags.AddGoFlagSet(flag.CommandLine)
 	viper.BindPFlags(flags)
+
+	fmt.Printf("parsed???: %s\n", flags.Parsed())
 }
 
 // initConfig reads in config file and ENV variables if set.
@@ -138,7 +142,13 @@ func runOperator(cmd *cobra.Command) {
 
 	logging.SetupLogging([]string{}, map[string]string{}, "cilium-operator", viper.GetBool("debug"))
 
-	log.Infof("Cilium Operator %s", version.Version)
+	/*log.Infof("Cilium Operator %s", version.Version)
+	logDirStr := flag.Lookup("log_dir").Value.String()
+	toStdErrStr := flag.Lookup("logtostderr").Value.String()
+	alsoToStdErrStr := flag.Lookup("alsologtostderr").Value.String()
+	fmt.Printf("logDirStr: %s\n", logDirStr)
+	fmt.Printf("toStdErrStr: %s\n", toStdErrStr)
+	fmt.Printf("alsoToStdErrStr: %s\n", alsoToStdErrStr)*/
 
 	if err := kvstore.Setup(kvStore, kvStoreOpts); err != nil {
 		log.WithError(err).WithFields(logrus.Fields{
@@ -181,6 +191,11 @@ func runOperator(cmd *cobra.Command) {
 		log.WithError(err).WithField("subsys", "CNPWatcher").Fatal(
 			"Cannot connect to Kubernetes apiserver ")
 	}
+
+	/*glog.Error("lol")
+	glog.Errorf("flags parsed? %v", flag.Parsed())
+	glog.Info("info level log!")
+	fmt.Printf("logDirStr: %s\n", logDirStr)*/
 
 	for {
 		select {
