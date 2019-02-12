@@ -30,7 +30,6 @@ import (
 	"github.com/cilium/cilium/pkg/logging/logfields"
 	"github.com/cilium/cilium/pkg/option"
 	"github.com/cilium/cilium/pkg/version"
-
 	gops "github.com/google/gops/agent"
 	"github.com/sirupsen/logrus"
 	"github.com/spf13/cobra"
@@ -82,6 +81,14 @@ func main() {
 }
 
 func init() {
+	// Make sure glog (used by the client-go dependency) logs to stderr, as it
+	// will try to log to directories that may not exist in the cilium-operator
+	// container and cause the cilium-operator to exit.
+	flag.Set("logtostderr", "true")
+	//flag.Set("log_dir", "nonexistent")
+	//pflag.CommandLine.AddGoFlagSet(flag.CommandLine)
+	//viper.BindPFlags(pflag.CommandLine)
+
 	cobra.OnInitialize(initConfig)
 
 	flags := rootCmd.Flags()
@@ -108,7 +115,7 @@ func init() {
 	flags.Bool(option.DisableCiliumEndpointCRDName, false, "")
 	flags.MarkHidden(option.DisableCiliumEndpointCRDName)
 	option.BindEnv(option.DisableCiliumEndpointCRDName)
-
+	flags.AddGoFlagSet(flag.CommandLine)
 	viper.BindPFlags(flags)
 }
 
@@ -128,12 +135,8 @@ func initConfig() {
 }
 
 func runOperator(cmd *cobra.Command) {
-	logging.SetupLogging([]string{}, map[string]string{}, "cilium-operator", viper.GetBool("debug"))
 
-	// Make sure glog (used by the client-go dependency) logs to stderr, as it
-	// will try to log to directories that may not exist in the cilium-operator
-	// container and cause the cilium-operator to exit.
-	flag.Set("logtostderr", "true")
+	logging.SetupLogging([]string{}, map[string]string{}, "cilium-operator", viper.GetBool("debug"))
 
 	log.Infof("Cilium Operator %s", version.Version)
 
