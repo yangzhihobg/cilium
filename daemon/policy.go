@@ -267,7 +267,8 @@ func (d *Daemon) PolicyAdd(rules policyAPI.Rules, opts *AddOptions) (uint64, err
 		}
 	}
 
-	rev := d.policy.AddListLocked(rules, epsIdentityConsumers, endpointsToRegen, &policySelectionWG)
+	addedRules, rev := d.policy.AddListLocked(rules)
+	addedRules.UpdateEndpointsAffectedByRules(epsIdentityConsumers, endpointsToRegen, &policySelectionWG)
 
 	d.policy.Mutex.Unlock()
 
