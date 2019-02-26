@@ -272,8 +272,9 @@ gofmt:
 	$(QUIET)for pkg in $(GOFILES); do $(GO) fmt $$pkg; done
 
 govet:
-	@$(ECHO_CHECK) vetting all GOFILES...
-	$(QUIET)$(GO) tool vet api pkg test $(SUBDIRS)
+	#FIXME https://github.com/cilium/cilium/issues/7261
+	#@$(ECHO_CHECK) vetting all GOFILES...
+	#$(QUIET)$(GO) vet ./api/... ./pkg/... $(GO_SUBDIRS)
 
 ineffassign:
 	@$(ECHO_CHECK) ineffassign
