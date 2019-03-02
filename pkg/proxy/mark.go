@@ -50,6 +50,9 @@ const (
 	// MagicMarkProxyMask can be used to fetch the proxy-relevant magic
 	// bits from a mark.
 	MagicMarkProxyMask int = 0x0E00
+	// MagicMarkProxyNoIDMask can be used to fetch the proxy-relevant magic
+	// bits from a mark for proxy reply traffic.
+	MagicMarkProxyNoIDMask int = 0xFFFFFEFF
 	// MagicMarkIsProxy can be used in conjunction with MagicMarkProxyMask
 	// to determine whether the mark is indicating that traffic is sourced
 	// from a proxy.
@@ -57,7 +60,7 @@ const (
 	// MagicMarkIsToProxy can be used in conjunction with MagicMarkHostMask
 	// to determine whether the mark is indicating that traffic is destined
 	// to a proxy.
-	MagicMarkIsToProxy int = 0x0200
+	MagicMarkIsToProxy uint32 = 0x0200
 
 	// MagicMarkIngress determines that the traffic is sourced from the
 	// proxy which is applying Ingress policy
@@ -75,9 +78,6 @@ const (
 	// MagicMarkK8sDrop determines that the traffic should be dropped in
 	// kubernetes environments.
 	MagicMarkK8sDrop int = 0x8000
-
-	// DSCPMask covers the lowest 6 bits.
-	DSCPMask = 0x3F
 )
 
 // getMagicMark returns the magic marker with which each packet must be marked.

@@ -459,9 +459,8 @@ if [ "$MODE" == "ipvlan" ]; then
 fi
 bpf_load $HOST_DEV1 "$OPTS" "egress" bpf_netdev.c bpf_host.o from-netdev $CALLS_MAP
 
-if [ "$IPSEC" == "true" ]; then
-	bpf_load $HOST_DEV2 "" "ingress" bpf_ipsec.c bpf_ipsec.o from-netdev $CALLS_MAP
-fi
+# bpf_ipsec.o is also needed by proxy redirects, so we load it unconditionally
+bpf_load $HOST_DEV2 "" "ingress" bpf_ipsec.c bpf_ipsec.o from-netdev $CALLS_MAP
 
 if [ -n "$XDP_DEV" ]; then
 	CIDR_MAP="cilium_cidr_v*"

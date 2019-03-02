@@ -26,6 +26,7 @@
 #include <stdio.h>
 
 #include <linux/icmpv6.h>
+#include <linux/if_packet.h>
 
 #include "lib/tailcall.h"
 #include "lib/utils.h"
@@ -281,13 +282,10 @@ skip_service_lookup:
 	}
 
 	if (redirect_to_proxy(verdict, forwarding_reason)) {
-		union macaddr host_mac = HOST_IFINDEX_MAC;
-
-		ipv6_redirect_to_proxy(skb, ip6, CT_EGRESS, verdict,
-				       forwarding_reason, monitor);
-
-		// TC_ACT_OK if OK, falling through to the stack.
-		return ipv6_l3(skb, l3_off, (__u8 *) NULL, (__u8 *) &host_mac.addr, METRIC_EGRESS);
+		// Trace the packet before its forwarded to proxy
+		send_trace_notify(skb, TRACE_TO_PROXY, SECLABEL, 0,
+				  0, 0, forwarding_reason, monitor);
+		return skb_redirect_to_proxy(skb, verdict);
 	}
 
 	if (!revalidate_data(skb, &data, &data_end, &ip6))
@@ -580,18 +578,10 @@ skip_service_lookup:
 	}
 
 	if (redirect_to_proxy(verdict, forwarding_reason)) {
-		union macaddr host_mac = HOST_IFINDEX_MAC;
-
-		ipv4_redirect_to_proxy(skb, ip4, CT_EGRESS, verdict,
-				       forwarding_reason, monitor);
-
-		if (!revalidate_data(skb, &data, &data_end, &ip4))
-			return DROP_INVALID;
-
-		cilium_dbg(skb, DBG_TO_HOST, skb->cb[CB_POLICY], 0);
-
-		// TC_ACT_OK if OK, falling through to the stack.
-		return ipv4_l3(skb, l3_off, (__u8 *) NULL, (__u8 *) &host_mac.addr, ip4);
+		// Trace the packet before its forwarded to proxy
+		send_trace_notify(skb, TRACE_TO_PROXY, SECLABEL, 0,
+				  0, 0, forwarding_reason, monitor);
+		return skb_redirect_to_proxy(skb, verdict);
 	}
 
 	/* After L4 write in port mapping: revalidate for direct packet access */
@@ -875,25 +865,11 @@ ipv6_policy(struct __sk_buff *skb, int ifindex, __u32 src_label, int *forwarding
 		return DROP_INVALID;
 
 	if (redirect_to_proxy(verdict, *forwarding_reason)) {
-		union macaddr host_mac = HOST_IFINDEX_MAC;
-		union macaddr router_mac = NODE_MAC;
-
-		ipv6_redirect_to_proxy(skb, ip6, CT_INGRESS, verdict,
-				       *forwarding_reason, monitor);
-
-		cilium_dbg(skb, DBG_TO_HOST, is_policy_skip(skb), 0);
-
-		if (eth_store_saddr(skb, (__u8 *) &router_mac.addr, 0) < 0)
-			return DROP_WRITE_ERROR;
-
-		if (eth_store_daddr(skb, (__u8 *) &host_mac.addr, 0) < 0)
-			return DROP_WRITE_ERROR;
-
-		skb->cb[CB_IFINDEX] = HOST_IFINDEX;
+		// Trace the packet before its forwarded to proxy
+		send_trace_notify(skb, TRACE_TO_PROXY, src_label, SECLABEL,
+				  0, ifindex, *forwarding_reason, monitor);
+		return skb_redirect_to_proxy(skb, verdict);
 	} else { // Not redirected to host / proxy.
-		// Clear DSCP to avoid going to the proxy accidentally
-		ipv6_set_dscp(skb, ip6, 0);
-
 		send_trace_notify(skb, TRACE_TO_LXC, src_label, SECLABEL,
 				  LXC_ID, ifindex, *forwarding_reason, monitor);
 	}
@@ -923,6 +899,7 @@ int tail_ipv6_policy(struct __sk_buff *skb)
 		return send_drop_notify(skb, src_label, SECLABEL, LXC_ID,
 					ret, TC_ACT_SHOT, METRIC_INGRESS);
 
+	skb->cb[0] = skb->mark; // essential for proxy ingress, see bpf_ipsec.c
 	return ret;
 }
 #endif /* ENABLE_IPV6 */
@@ -1023,31 +1000,11 @@ ipv4_policy(struct __sk_buff *skb, int ifindex, __u32 src_label, int *forwarding
 		return DROP_INVALID;
 
 	if (redirect_to_proxy(verdict, *forwarding_reason)) {
-		union macaddr host_mac = HOST_IFINDEX_MAC;
-		union macaddr router_mac = NODE_MAC;
-
-		ipv4_redirect_to_proxy(skb, ip4, CT_INGRESS, verdict,
-				       *forwarding_reason, monitor);
-
-		cilium_dbg(skb, DBG_TO_HOST, is_policy_skip(skb), 0);
-
-		if (eth_store_saddr(skb, (__u8 *) &router_mac.addr, 0) < 0)
-			return DROP_WRITE_ERROR;
-
-		if (eth_store_daddr(skb, (__u8 *) &host_mac.addr, 0) < 0)
-			return DROP_WRITE_ERROR;
-
-		skb->cb[CB_IFINDEX] = HOST_IFINDEX;
-
-#ifdef HOST_REDIRECT_TO_INGRESS
-		return redirect(HOST_IFINDEX, BPF_F_INGRESS);
-#else
-		return redirect(HOST_IFINDEX, 0);
-#endif
+		// Trace the packet before its forwarded to proxy
+		send_trace_notify(skb, TRACE_TO_PROXY, src_label, SECLABEL,
+				  0, ifindex, *forwarding_reason, monitor);
+		return skb_redirect_to_proxy(skb, verdict);
 	} else { // Not redirected to host / proxy.
-		// Clear DSCP to avoid going to the proxy accidentally
-		ipv4_set_dscp(skb, ip4, 0);
-
 		send_trace_notify(skb, TRACE_TO_LXC, src_label, SECLABEL,
 				  LXC_ID, ifindex, *forwarding_reason, monitor);
 	}
@@ -1075,6 +1032,7 @@ int tail_ipv4_policy(struct __sk_buff *skb)
 		return send_drop_notify(skb, src_label, SECLABEL, LXC_ID,
 					ret, TC_ACT_SHOT, METRIC_INGRESS);
 
+	skb->cb[0] = skb->mark; // essential for proxy ingress, see bpf_ipsec.c
 	return ret;
 }
 #endif /* ENABLE_IPV4 */

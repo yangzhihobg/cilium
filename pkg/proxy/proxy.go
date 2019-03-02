@@ -201,18 +201,8 @@ func (p *Proxy) isPortAvailable(openLocalPorts map[uint16]struct{}, port uint16)
 	if _, used := allocatedPorts[port]; used {
 		return false // port already used
 	}
-	// Check that the low 6 bits are unique.
-	// This is needed for the DSCP and mark matches on iptables
-	// rules.
-	// We only use a small number of proxy ports, so looping
-	// over the map is fast
-	if port&DSCPMask == 0 {
-		return false // must have non-zero DSCP bits
-	}
-	for p := range allocatedPorts {
-		if port&DSCPMask == p&DSCPMask {
-			return false // low 6 bits not unique
-		}
+	if port == 0 {
+		return false // zero port requested
 	}
 	// Check that the port is not already open
 	if _, alreadyOpen := openLocalPorts[port]; alreadyOpen {
@@ -243,23 +233,6 @@ func (p *Proxy) allocatePort(port uint16) (uint16, error) {
 	}
 
 	return 0, fmt.Errorf("no available proxy ports")
-}
-
-func init() {
-	// Sanity-check the proxy port values
-	pmap := make(map[uint16]uint16, 64)
-	for _, v := range proxyPorts {
-		if v.ProxyPort != 0 {
-			dscp := v.ProxyPort & DSCPMask
-			if dscp == 0 {
-				panic(fmt.Sprintf("Zero low 6 bits for %s ProxyPort %d", v.Name, v.ProxyPort))
-			}
-			if port, ok := pmap[dscp]; ok {
-				panic(fmt.Sprintf("Overlapping low 6 bits for %s ProxyPort %d (already have %d)", v.Name, v.ProxyPort, port))
-			}
-			pmap[dscp] = v.ProxyPort
-		}
-	}
 }
 
 // Called with proxyPortsMutex held!

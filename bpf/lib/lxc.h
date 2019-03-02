@@ -63,53 +63,14 @@ static inline int is_valid_lxc_src_ipv4(struct iphdr *ip4)
 }
 #endif
 
-#ifdef ENABLE_IPV4
-static inline void __inline__
-ipv4_redirect_to_proxy(struct __sk_buff *skb, struct iphdr *ip4, int ingress,
-		       __be16 proxy_port, int forwarding_reason, __u32 monitor)
+static inline int __inline__
+skb_redirect_to_proxy(struct __sk_buff *skb, __be16 proxy_port)
 {
-	uint32_t dscp = bpf_ntohs(proxy_port) & 0x3F;
-
-	if (ingress == CT_INGRESS) {
-		// Trace the packet before its forwarded to proxy
-		send_trace_notify(skb, TRACE_TO_PROXY, SECLABEL, 0, 0, HOST_IFINDEX,
-				  forwarding_reason, monitor);
-
-		/* skb->mark gets scrubbed for traffic passing the cilium host veth.
-		 * Set the DSCP in the IP header to cover that case.
-		 * Note that the skb is destined to the host proxy so the POD will not
-		 * see the modified DSCP. */
-		ipv4_set_dscp(skb, ip4, dscp);
-	} else {
-		skb->mark = MARK_MAGIC_TO_PROXY | dscp;
-	}
-	cilium_dbg_capture(skb, DBG_CAPTURE_PROXY_POST, proxy_port);
+	skb->mark = MARK_MAGIC_TO_PROXY | proxy_port << 16;
+	skb_change_type(skb, PACKET_HOST); // Required ingress packets from overlay
+	cilium_dbg_capture(skb, DBG_CAPTURE_PROXY_POST, proxy_port);	
+	return TC_ACT_OK;
 }
-#endif /* ENABLE_IPV4 */
-
-#ifdef ENABLE_IPV6
-static inline void __inline__
-ipv6_redirect_to_proxy(struct __sk_buff *skb, struct ipv6hdr *ip6, int ingress,
-		       __be16 proxy_port, int forwarding_reason, __u32 monitor)
-{
-	uint32_t dscp = bpf_ntohs(proxy_port) & 0x3F;
-
-	if (ingress == CT_INGRESS) {
-		// Trace the packet before its destination address and port are rewritten.
-		send_trace_notify(skb, TRACE_TO_PROXY, SECLABEL, 0, 0, HOST_IFINDEX,
-				  forwarding_reason, monitor);
-
-		/* skb->mark gets scrubbed for traffic passing the cilium host veth.
-		 * Set the DSCP in the IP header to cover that case.
-		 * Note that the skb is destined to the host proxy so the POD will not
-		 * see the modified DSCP. */
-		ipv6_set_dscp(skb, ip6, dscp);
-	} else {
-		skb->mark = MARK_MAGIC_TO_PROXY | dscp;
-	}
-	cilium_dbg_capture(skb, DBG_CAPTURE_PROXY_POST, proxy_port);
-}
-#endif /* ENABLE_IPV6 */
 
 /**
  * tc_index_is_from_proxy - returns true if packet originates from ingress proxy

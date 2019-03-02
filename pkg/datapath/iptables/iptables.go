@@ -21,6 +21,7 @@ import (
 	"net"
 	"strings"
 
+	"github.com/cilium/cilium/pkg/byteorder"
 	"github.com/cilium/cilium/pkg/cidr"
 	"github.com/cilium/cilium/pkg/command/exec"
 	"github.com/cilium/cilium/pkg/datapath/linux/linux_defaults"
@@ -281,15 +282,14 @@ func Remove6Rules() {
 	}
 }
 
-func ingressProxyRule(cmd, destMatch, l4Match, dscpMatch, mark, port, name string) []string {
+func ingressProxyRule(cmd, destMatch, l4Match, markMatch, mark, port, name string) []string {
 	ret := []string{
 		"-t", "mangle",
 		cmd, ciliumPreMangleChain,
-		"-i", defaults.HostDevice,
 		"-d", destMatch,
 		"-p", l4Match,
-		"-m", "dscp", "--dscp", dscpMatch,
-		"-m", "comment", "--comment", "cilium: TPROXY to host " + name + " proxy on " + defaults.HostDevice,
+		"-m", "mark", "--mark", markMatch,
+		"-m", "comment", "--comment", "cilium: TPROXY to host " + name + " proxy",
 		"-j", "TPROXY",
 		"--tproxy-mark", mark,
 		"--on-port", port}
@@ -299,8 +299,8 @@ func ingressProxyRule(cmd, destMatch, l4Match, dscpMatch, mark, port, name strin
 
 func iptIngressProxyRule(cmd string, l4proto string, proxyPort uint16, name string) error {
 	// Match
-	dscp := proxyPort & proxy.DSCPMask
-	ingressDSCPMatch := fmt.Sprintf("%#02x", dscp)
+	port := uint32(byteorder.HostToNetwork(proxyPort).(uint16)) << 16
+	ingressMarkMatch := fmt.Sprintf("%#08x", proxy.MagicMarkIsToProxy|port)
 	// TPROXY params
 	ingressProxyMark := fmt.Sprintf("%#08x", proxy.MagicMarkIsToProxy)
 	ingressProxyPort := fmt.Sprintf("%d", proxyPort)
@@ -308,13 +308,13 @@ func iptIngressProxyRule(cmd string, l4proto string, proxyPort uint16, name stri
 	var err error
 	if useIp4tables {
 		err = runProg("iptables",
-			ingressProxyRule(cmd, node.GetIPv4AllocRange().String(), l4proto, ingressDSCPMatch,
+			ingressProxyRule(cmd, node.GetIPv4AllocRange().String(), l4proto, ingressMarkMatch,
 				ingressProxyMark, ingressProxyPort, name),
 			false)
 	}
 	if err == nil && useIp6tables {
 		err = runProg("ip6tables",
-			ingressProxyRule(cmd, node.GetIPv6AllocRange().String(), l4proto, ingressDSCPMatch,
+			ingressProxyRule(cmd, node.GetIPv6AllocRange().String(), l4proto, ingressMarkMatch,
 				ingressProxyMark, ingressProxyPort, name),
 			false)
 	}
@@ -336,11 +336,12 @@ func egressProxyRule(cmd, l4Match, markMatch, mark, port, name string) []string 
 
 func iptEgressProxyRule(cmd string, l4proto string, proxyPort uint16, name string) error {
 	// Match
-	dscp := int(proxyPort & proxy.DSCPMask)
-	egressMarkMatch := fmt.Sprintf("%#08x", proxy.MagicMarkIsToProxy|dscp)
+	port := uint32(byteorder.HostToNetwork(proxyPort).(uint16)) << 16
+	egressMarkMatch := fmt.Sprintf("%#08x", proxy.MagicMarkIsToProxy|port)
 	// TPROXY params
 	egressProxyMark := fmt.Sprintf("%#08x", proxy.MagicMarkIsToProxy)
 	egressProxyPort := fmt.Sprintf("%d", proxyPort)
+
 	var err error
 	if useIp4tables {
 		err = runProg("iptables",
@@ -370,17 +371,19 @@ func install4ProxyNotrackRules() error {
 	var err error
 	if useIp4tables {
 		// match return traffic from an ingress proxy (identity is all zeroes).
-		matchIngressProxyReply := fmt.Sprintf("%#08x", proxy.MagicMarkIngress)
+		matchToProxy := fmt.Sprintf("%#08x/%#08x", proxy.MagicMarkIsToProxy, proxy.MagicMarkHostMask)
+		// proxy return traffic has 0 ID in the mask
+		matchProxyReply := fmt.Sprintf("%#08x/%#08x", proxy.MagicMarkIsProxy, proxy.MagicMarkProxyNoIDMask)
 
-		// No conntrack for traffic to ingress proxy
+		// No conntrack for traffic to proxy
 		err = runProg("iptables", []string{
 			"-t", "raw",
 			"-A", ciliumPreRawChain,
-			"-i", defaults.HostDevice,
+			// Destination is a local node POD address
 			"!", "-d", node.GetInternalIPv4().String(),
 			"-m", "iprange", "--dst-range", iptRange(node.GetIPv4AllocRange()),
-			"-m", "dscp", "!", "--dscp", "0x00",
-			"-m", "comment", "--comment", "cilium: NOTRACK for ingress proxy traffic on " + defaults.HostDevice,
+			"-m", "mark", "--mark", matchToProxy,
+			"-m", "comment", "--comment", "cilium: NOTRACK for proxy traffic",
 			"-j", "NOTRACK"}, false)
 		if err == nil {
 			// No conntrack for proxy return traffic
@@ -390,7 +393,7 @@ func install4ProxyNotrackRules() error {
 				// Return traffic is from a local node POD address
 				"!", "-s", node.GetInternalIPv4().String(),
 				"-m", "iprange", "--src-range", iptRange(node.GetIPv4AllocRange()),
-				"-m", "mark", "--mark", matchIngressProxyReply,
+				"-m", "mark", "--mark", matchProxyReply,
 				"-m", "comment", "--comment", "cilium: NOTRACK for proxy return traffic",
 				"-j", "NOTRACK"}, false)
 		}
@@ -402,17 +405,18 @@ func install6ProxyNotrackRules() error {
 	var err error
 	if useIp6tables {
 		// match return traffic from an ingress proxy (identity is all zeroes).
-		matchIngressProxyReply := fmt.Sprintf("%#08x", proxy.MagicMarkIngress)
+		matchToProxy := fmt.Sprintf("%#08x/%#08x", proxy.MagicMarkIsToProxy, proxy.MagicMarkHostMask)
+		matchProxyReply := fmt.Sprintf("%#08x/%#08x", proxy.MagicMarkIsProxy, proxy.MagicMarkProxyNoIDMask)
 
 		// No conntrack for traffic to ingress proxy
 		err = runProg("ip6tables", []string{
 			"-t", "raw",
 			"-A", ciliumPreRawChain,
-			"-i", defaults.HostDevice,
+			// Destination is a local node POD address
 			"!", "-d", node.GetIPv6().String(),
 			"-m", "iprange", "--dst-range", iptRange(node.GetIPv6AllocRange()),
-			"-m", "dscp", "!", "--dscp", "0x00",
-			"-m", "comment", "--comment", "cilium: NOTRACK for ingress proxy traffic on " + defaults.HostDevice,
+			"-m", "mark", "--mark", matchToProxy,
+			"-m", "comment", "--comment", "cilium: NOTRACK for proxy traffic",
 			"-j", "NOTRACK"}, false)
 		if err == nil {
 			// No conntrack for proxy return traffic
@@ -422,7 +426,7 @@ func install6ProxyNotrackRules() error {
 				// Return traffic is from a local node POD address
 				"!", "-s", node.GetIPv6().String(),
 				"-m", "iprange", "--src-range", iptRange(node.GetIPv6AllocRange()),
-				"-m", "mark", "--mark", matchIngressProxyReply,
+				"-m", "mark", "--mark", matchProxyReply,
 				"-m", "comment", "--comment", "cilium: NOTRACK for proxy return traffic",
 				"-j", "NOTRACK"}, false)
 		}
