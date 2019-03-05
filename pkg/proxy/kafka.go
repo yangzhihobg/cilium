@@ -21,8 +21,6 @@ import (
 	"io"
 	"net"
 	"strconv"
-	"sync"
-	"time"
 
 	"github.com/cilium/cilium/pkg/completion"
 	"github.com/cilium/cilium/pkg/flowdebug"
@@ -44,19 +42,24 @@ const (
 	fieldID = "id"
 )
 
+// The maps holding kafkaListeners (and kafkaRedirects), as well as
+// the reference `count` field are protected by `mutex`. `socket` safe
+// to be used from multiple goroutines and the other fields below are
+// immutable after initialization.
 type kafkaListener struct {
 	socket               *proxySocket
 	proxyPort            uint16
 	endpointInfoRegistry logger.EndpointInfoRegistry
 	ingress              bool
+	transparent          bool
 	count                int
-	lookupNewDest        destLookupFunc
 }
 
-// mutex protects accesses to the configuration resources.
-var mutex lock.RWMutex
-var kafkaListeners map[uint16]*kafkaListener // key: proxy port
-var kafkaRedirects map[uint64]*kafkaRedirect // key: dst port | ingress << 16 | endpoint ID << 32
+var (
+	mutex          lock.RWMutex                      // mutex protects accesses to the configuration resources.
+	kafkaListeners = make(map[uint16]*kafkaListener) // key: proxy port
+	kafkaRedirects = make(map[uint64]*kafkaRedirect) // key: dst port | dir << 16 | endpoint ID << 32
+)
 
 func mapKey(dstPort uint16, ingress bool, eID uint64) uint64 {
 	var dir uint64
@@ -65,8 +68,6 @@ func mapKey(dstPort uint16, ingress bool, eID uint64) uint64 {
 	}
 	return uint64(dstPort) | dir<<16 | eID<<32
 }
-
-var kafkaOnce sync.Once
 
 // kafkaRedirect implements the Redirect interface for an l7 proxy
 // This can be shared accross multiple redirects, but 'redirect' is
@@ -78,11 +79,11 @@ type kafkaRedirect struct {
 	listener             *kafkaListener
 }
 
-type destLookupFunc func(remoteAddr string, dport uint16) (uint32, string, error)
+type srcIDLookupFunc func(remoteAddr string, localAddr string, ingress bool) (uint32, error)
 
 type kafkaConfiguration struct {
-	noMarker      bool
-	lookupNewDest destLookupFunc
+	testMode    bool
+	lookupSrcID srcIDLookupFunc
 }
 
 func (l *kafkaListener) Listen() {
@@ -100,17 +101,7 @@ func (l *kafkaListener) Listen() {
 			continue
 		}
 		// Locate the redirect for this connection
-		// retrieve the original destination IP and destination port.
-		// XXX: This get's removed when removing proxymap!
-		_, dstIPPort, err := l.lookupNewDest(pair.Rx.conn.RemoteAddr().String(), l.proxyPort)
-		if err != nil {
-			log.WithField("source",
-				pair.Rx.conn.RemoteAddr().String()).WithError(err).Error("Unable to lookup original destination")
-			// Use actual destination address instead
-			dstIPPort = pair.Rx.conn.LocalAddr().String()
-		}
-
-		endpointIPStr, dstPortStr, err := net.SplitHostPort(dstIPPort)
+		endpointIPStr, dstPortStr, err := net.SplitHostPort(pair.Rx.conn.LocalAddr().String())
 		if err != nil {
 			log.WithField(logfields.Port, l.proxyPort).WithError(err).Error("No destination address")
 			continue
@@ -130,7 +121,7 @@ func (l *kafkaListener) Listen() {
 		}
 		portInt, _ := strconv.Atoi(dstPortStr)
 		key := mapKey(uint16(portInt), l.ingress, epinfo.ID)
-		log.Infof("Looking up with port: %d, ingress: %v, EID: %d", uint16(portInt), l.ingress, epinfo.ID)
+		log.Debugf("Looking up with port: %d, ingress: %v, EID: %d", uint16(portInt), l.ingress, epinfo.ID)
 
 		mutex.Lock()
 		redir, ok := kafkaRedirects[key]
@@ -146,23 +137,23 @@ func (l *kafkaListener) Listen() {
 // createKafkaRedirect creates a redirect to the kafka proxy. The redirect structure passed
 // in is safe to access for reading and writing.
 func createKafkaRedirect(r *Redirect, conf kafkaConfiguration, endpointInfoRegistry logger.EndpointInfoRegistry) (RedirectImplementation, error) {
-	kafkaOnce.Do(func() {
-		kafkaListeners = make(map[uint16]*kafkaListener)
-		kafkaRedirects = make(map[uint64]*kafkaRedirect)
-	})
-
 	redir := &kafkaRedirect{
 		redirect:             r,
 		conf:                 conf,
 		endpointInfoRegistry: endpointInfoRegistry,
 	}
 
-	if redir.conf.lookupNewDest == nil {
-		redir.conf.lookupNewDest = lookupNewDest
+	if redir.conf.lookupSrcID == nil {
+		redir.conf.lookupSrcID = lookupSrcID
 	}
 
-	key := mapKey(r.dstPort, r.ingress, r.endpointID)
-	log.Debugf("Registering with port: %d, ingress: %v, EID: %d", r.dstPort, r.ingress, r.endpointID)
+	dstPort := r.dstPort
+	if conf.testMode {
+		// must register with the proxy port for unit tests (no IP_TRANSPARENT)
+		dstPort = r.ProxyPort
+	}
+	key := mapKey(dstPort, r.ingress, r.endpointID)
+	log.Debugf("Registering with port: %d, ingress: %v, EID: %d", dstPort, r.ingress, r.endpointID)
 	mutex.Lock()
 	if _, ok := kafkaRedirects[key]; ok {
 		mutex.Unlock()
@@ -174,7 +165,7 @@ func createKafkaRedirect(r *Redirect, conf kafkaConfiguration, endpointInfoRegis
 	listener := kafkaListeners[r.ProxyPort]
 	if listener == nil {
 		marker := 0
-		if !conf.noMarker {
+		if !conf.testMode {
 			markIdentity := int(0)
 			// As ingress proxy, all replies to incoming requests must have the
 			// identity of the endpoint we are proxying for
@@ -187,7 +178,7 @@ func createKafkaRedirect(r *Redirect, conf kafkaConfiguration, endpointInfoRegis
 
 		// Listen needs to be in the synchronous part of this function to ensure that
 		// the proxy port is never refusing connections.
-		socket, err := listenSocket(fmt.Sprintf(":%d", r.ProxyPort), marker)
+		socket, err := listenSocket(fmt.Sprintf(":%d", r.ProxyPort), marker, !conf.testMode)
 		if err != nil {
 			delete(kafkaRedirects, key)
 			mutex.Unlock()
@@ -198,8 +189,8 @@ func createKafkaRedirect(r *Redirect, conf kafkaConfiguration, endpointInfoRegis
 			proxyPort:            r.ProxyPort,
 			endpointInfoRegistry: endpointInfoRegistry,
 			ingress:              r.ingress,
+			transparent:          !conf.testMode,
 			count:                0,
-			lookupNewDest:        redir.conf.lookupNewDest,
 		}
 
 		go listener.Listen()
@@ -364,7 +355,7 @@ func (k *kafkaRedirect) handleRequest(pair *connectionPair, req *kafka.RequestMe
 
 	if pair.Tx.Closed() {
 		marker := 0
-		if !k.conf.noMarker {
+		if !k.conf.testMode {
 			marker = getMagicMark(k.redirect.ingress, int(remoteIdentity))
 		}
 
@@ -423,12 +414,17 @@ func (k *kafkaRedirect) handleRequests(done <-chan struct{}, pair *connectionPai
 		return
 	}
 
-	// retrieve identity of source together with original destination IP
-	// and destination port
-	srcIdentity, dstIPPort, err := k.conf.lookupNewDest(remoteAddr.String(), k.redirect.ProxyPort)
+	localAddr := pair.Rx.conn.LocalAddr()
+	if localAddr == nil {
+		scopedLog.Error("Kafka request connection has no local address")
+		return
+	}
+
+	// retrieve identity of source
+	srcIdentity, err := k.conf.lookupSrcID(remoteAddr.String(), localAddr.String(), k.redirect.ingress)
 	if err != nil {
 		scopedLog.WithField("source",
-			remoteAddr.String()).WithError(err).Error("Unable to lookup original destination")
+			remoteAddr.String()).WithError(err).Error("Unable to lookup source security ID")
 		return
 	}
 
@@ -454,8 +450,12 @@ func (k *kafkaRedirect) handleRequests(done <-chan struct{}, pair *connectionPai
 			}
 			return
 		}
-
-		handler(pair, req, correlationCache, remoteAddr, srcIdentity, dstIPPort)
+		origDstAddr := localAddr.String()
+		if k.conf.testMode {
+			origDstAddr = fmt.Sprintf("127.0.0.1:%d", k.redirect.dstPort)
+		}
+		scopedLog.Debugf("Forwarding request to %s", origDstAddr)
+		handler(pair, req, correlationCache, remoteAddr, srcIdentity, origDstAddr)
 	}
 }
 
@@ -511,21 +511,6 @@ func (k *kafkaRedirect) handleRequestConnection(pair *connectionPair) {
 	}), "Proxying request Kafka connection")
 
 	k.handleRequests(k.listener.socket.closing, pair, pair.Rx, k.handleRequest)
-
-	// The proxymap contains an entry with metadata for the receive side of the
-	// connection, remove it after the connection has been closed.
-	if pair.Rx != nil {
-		// We are running in our own go routine here so we can just
-		// block this go routine until after the connection is
-		// guaranteed to have been closed
-		time.Sleep(proxyConnectionCloseTimeout + time.Second)
-
-		if err := k.redirect.removeProxyMapEntryOnClose(pair.Rx.conn); err != nil {
-			log.WithError(err).WithFields(logrus.Fields{
-				"from": pair.Rx,
-			}).Warning("Unable to remove proxymap entry after closing connection")
-		}
-	}
 }
 
 func (k *kafkaRedirect) handleResponseConnection(pair *connectionPair, correlationCache *kafka.CorrelationCache,
