@@ -73,6 +73,9 @@ func defaultCommands(confDir string, cmdDir string, k8sPods []string) []string {
 		"ip rule",
 		"ip -4 route show table 2005",
 		"ip -6 route show table 2005",
+		"cat /proc/meminfo",
+		"cat /proc/vmstat",
+		"cat /proc/vmallocinfo",
 		// gops
 		fmt.Sprintf("gops memstats $(pidof %s)", components.CiliumAgentName),
 		fmt.Sprintf("gops stack $(pidof %s)", components.CiliumAgentName),
