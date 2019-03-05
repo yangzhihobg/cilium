@@ -43,7 +43,7 @@ const (
 )
 
 // The maps holding kafkaListeners (and kafkaRedirects), as well as
-// the reference `count` field are protected by `mutex`. `socket` safe
+// the reference `count` field are protected by `mutex`. `socket` is safe
 // to be used from multiple goroutines and the other fields below are
 // immutable after initialization.
 type kafkaListener struct {
@@ -69,14 +69,15 @@ func mapKey(dstPort uint16, ingress bool, eID uint64) uint64 {
 	return uint64(dstPort) | dir<<16 | eID<<32
 }
 
-// kafkaRedirect implements the Redirect interface for an l7 proxy
-// This can be shared accross multiple redirects, but 'redirect' is
-// endpoint specific.
+// kafkaRedirect implements the RedirectImplementation interface
+// This extends the Redirect with Kafka specific state.
+// 'listener' is shared accross multiple kafkaRedirects
+// 'redirect' is unique for this kafkaRedirect
 type kafkaRedirect struct {
+	listener             *kafkaListener
 	redirect             *Redirect
 	endpointInfoRegistry logger.EndpointInfoRegistry
 	conf                 kafkaConfiguration
-	listener             *kafkaListener
 }
 
 type srcIDLookupFunc func(remoteAddr string, localAddr string, ingress bool) (uint32, error)
@@ -121,7 +122,7 @@ func (l *kafkaListener) Listen() {
 		}
 		portInt, _ := strconv.Atoi(dstPortStr)
 		key := mapKey(uint16(portInt), l.ingress, epinfo.ID)
-		log.Debugf("Looking up with port: %d, ingress: %v, EID: %d", uint16(portInt), l.ingress, epinfo.ID)
+		log.WithField(logfields.EndpointID, epinfo.ID).Debugf("Looking up Kafka redirect with port: %d, ingress: %v", uint16(portInt), l.ingress)
 
 		mutex.Lock()
 		redir, ok := kafkaRedirects[key]
@@ -147,13 +148,15 @@ func createKafkaRedirect(r *Redirect, conf kafkaConfiguration, endpointInfoRegis
 		redir.conf.lookupSrcID = lookupSrcID
 	}
 
+	// must register with the proxy port for unit tests (no IP_TRANSPARENT)
 	dstPort := r.dstPort
 	if conf.testMode {
-		// must register with the proxy port for unit tests (no IP_TRANSPARENT)
-		dstPort = r.ProxyPort
+		dstPort = r.listener.proxyPort
 	}
-	key := mapKey(dstPort, r.ingress, r.endpointID)
-	log.Debugf("Registering with port: %d, ingress: %v, EID: %d", dstPort, r.ingress, r.endpointID)
+	key := mapKey(dstPort, r.listener.ingress, r.endpointID)
+	log.WithField(logfields.EndpointID, r.endpointID).Debugf(
+		"Registering %s with port: %d, ingress: %v",
+		r.listener.name, dstPort, r.listener.ingress)
 	mutex.Lock()
 	if _, ok := kafkaRedirects[key]; ok {
 		mutex.Unlock()
@@ -162,23 +165,16 @@ func createKafkaRedirect(r *Redirect, conf kafkaConfiguration, endpointInfoRegis
 	kafkaRedirects[key] = redir
 
 	// Start a listener if not already running
-	listener := kafkaListeners[r.ProxyPort]
+	listener := kafkaListeners[r.listener.proxyPort]
 	if listener == nil {
 		marker := 0
 		if !conf.testMode {
-			markIdentity := int(0)
-			// As ingress proxy, all replies to incoming requests must have the
-			// identity of the endpoint we are proxying for
-			// if r.ingress {
-			//	markIdentity = int(r.localEndpoint.GetIdentity())
-			// }
-
-			marker = getMagicMark(r.ingress, markIdentity)
+			marker = getMagicMark(r.listener.ingress, 0)
 		}
 
 		// Listen needs to be in the synchronous part of this function to ensure that
 		// the proxy port is never refusing connections.
-		socket, err := listenSocket(fmt.Sprintf(":%d", r.ProxyPort), marker, !conf.testMode)
+		socket, err := listenSocket(fmt.Sprintf(":%d", r.listener.proxyPort), marker, !conf.testMode)
 		if err != nil {
 			delete(kafkaRedirects, key)
 			mutex.Unlock()
@@ -186,16 +182,16 @@ func createKafkaRedirect(r *Redirect, conf kafkaConfiguration, endpointInfoRegis
 		}
 		listener = &kafkaListener{
 			socket:               socket,
-			proxyPort:            r.ProxyPort,
+			proxyPort:            r.listener.proxyPort,
 			endpointInfoRegistry: endpointInfoRegistry,
-			ingress:              r.ingress,
+			ingress:              r.listener.ingress,
 			transparent:          !conf.testMode,
 			count:                0,
 		}
 
 		go listener.Listen()
 
-		kafkaListeners[r.ProxyPort] = listener
+		kafkaListeners[r.listener.proxyPort] = listener
 	}
 	listener.count++
 	redir.listener = listener
@@ -261,7 +257,7 @@ func apiKeyToString(apiKey int16) string {
 func (k *kafkaRedirect) newLogRecordFromRequest(req *kafka.RequestMessage) kafkaLogRecord {
 	return kafkaLogRecord{
 		LogRecord: logger.NewLogRecord(k.endpointInfoRegistry, k.redirect.localEndpoint,
-			accesslog.TypeRequest, k.redirect.ingress,
+			accesslog.TypeRequest, k.redirect.listener.ingress,
 			logger.LogTags.Kafka(&accesslog.LogRecordKafka{
 				APIVersion:    req.GetVersion(),
 				APIKey:        apiKeyToString(req.GetAPIKey()),
@@ -275,7 +271,7 @@ func (k *kafkaRedirect) newLogRecordFromRequest(req *kafka.RequestMessage) kafka
 func (k *kafkaRedirect) newLogRecordFromResponse(res *kafka.ResponseMessage, req *kafka.RequestMessage) kafkaLogRecord {
 	lr := kafkaLogRecord{
 		LogRecord: logger.NewLogRecord(k.endpointInfoRegistry, k.redirect.localEndpoint,
-			accesslog.TypeResponse, k.redirect.ingress, logger.LogTags.Kafka(&accesslog.LogRecordKafka{})),
+			accesslog.TypeResponse, k.redirect.listener.ingress, logger.LogTags.Kafka(&accesslog.LogRecordKafka{})),
 		localEndpoint: k.redirect.localEndpoint,
 	}
 
@@ -356,7 +352,7 @@ func (k *kafkaRedirect) handleRequest(pair *connectionPair, req *kafka.RequestMe
 	if pair.Tx.Closed() {
 		marker := 0
 		if !k.conf.testMode {
-			marker = getMagicMark(k.redirect.ingress, int(remoteIdentity))
+			marker = getMagicMark(k.redirect.listener.ingress, int(remoteIdentity))
 		}
 
 		flowdebug.Log(scopedLog.WithFields(logrus.Fields{
@@ -421,7 +417,7 @@ func (k *kafkaRedirect) handleRequests(done <-chan struct{}, pair *connectionPai
 	}
 
 	// retrieve identity of source
-	srcIdentity, err := k.conf.lookupSrcID(remoteAddr.String(), localAddr.String(), k.redirect.ingress)
+	srcIdentity, err := k.conf.lookupSrcID(remoteAddr.String(), localAddr.String(), k.redirect.listener.ingress)
 	if err != nil {
 		scopedLog.WithField("source",
 			remoteAddr.String()).WithError(err).Error("Unable to lookup source security ID")
@@ -535,8 +531,10 @@ func (k *kafkaRedirect) UpdateRules(wg *completion.WaitGroup, l4 *policy.L4Filte
 // Close the redirect.
 func (k *kafkaRedirect) Close(wg *completion.WaitGroup) (revert.FinalizeFunc, revert.RevertFunc) {
 	return func() {
-		log.Debugf("Un-Registering with port: %d, ingress: %v, EID: %d", k.redirect.dstPort, k.redirect.ingress, k.redirect.endpointID)
-		key := mapKey(k.redirect.dstPort, k.redirect.ingress, k.redirect.endpointID)
+		r := k.redirect
+		log.WithField(logfields.EndpointID, r.endpointID).Debugf("Un-Registering %s port: %d",
+			r.listener.name, r.dstPort)
+		key := mapKey(r.dstPort, r.listener.ingress, r.endpointID)
 
 		mutex.Lock()
 		delete(kafkaRedirects, key)
@@ -544,7 +542,7 @@ func (k *kafkaRedirect) Close(wg *completion.WaitGroup) (revert.FinalizeFunc, re
 		log.Debugf("Close: Listener count: %d", k.listener.count)
 		if k.listener.count == 0 {
 			k.listener.socket.Close()
-			delete(kafkaListeners, k.redirect.ProxyPort)
+			delete(kafkaListeners, r.listener.proxyPort)
 		}
 		mutex.Unlock()
 	}, nil

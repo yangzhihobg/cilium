@@ -193,12 +193,12 @@ func (d *Daemon) UpdateProxyRedirect(e *endpoint.Endpoint, l4 *policy.L4Filter, 
 		return 0, fmt.Errorf("can't redirect, proxy disabled"), nil, nil
 	}
 
-	r, err, finalizeFunc, revertFunc := d.l7Proxy.CreateOrUpdateRedirect(l4, e.ProxyID(l4), e, proxyWaitGroup)
+	port, err, finalizeFunc, revertFunc := d.l7Proxy.CreateOrUpdateRedirect(l4, e.ProxyID(l4), e, proxyWaitGroup)
 	if err != nil {
 		return 0, err, nil, nil
 	}
 
-	return r.ProxyPort, nil, finalizeFunc, revertFunc
+	return port, nil, finalizeFunc, revertFunc
 }
 
 // RemoveProxyRedirect removes a previously installed proxy redirect for an

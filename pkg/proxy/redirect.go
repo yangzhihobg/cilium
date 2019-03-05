@@ -45,16 +45,10 @@ type RedirectImplementation interface {
 type Redirect struct {
 	// The following fields are only written to during initialization, it
 	// is safe to read these fields without locking the mutex
-
-	// ProxyPort is the port the redirects redirects to where the proxy is
-	// listening on
-	ProxyPort      uint16
+	listener       *ProxyPort
 	dstPort        uint16
 	endpointID     uint64
-	listenerName   string
-	ingress        bool
 	localEndpoint  logger.EndpointUpdater
-	parserType     policy.L7ParserType
 	created        time.Time
 	implementation RedirectImplementation
 
@@ -65,16 +59,20 @@ type Redirect struct {
 	rules       policy.L7DataMap
 }
 
-func newRedirect(localEndpoint logger.EndpointUpdater, listenerName string) *Redirect {
+func newRedirect(localEndpoint logger.EndpointUpdater, listener *ProxyPort, dstPort uint16) *Redirect {
 	return &Redirect{
+		listener:      listener,
+		dstPort:       dstPort,
+		endpointID:    localEndpoint.GetID(),
 		localEndpoint: localEndpoint,
-		listenerName:  listenerName,
 		created:       time.Now(),
 		lastUpdated:   time.Now(),
 	}
 }
 
 // updateRules updates the rules of the redirect, Redirect.mutex must be held
+// 'implementation' is not initialized when this is called the first time.
+// TODO: Replace this with RedirectImplementation UpdateRules method!
 func (r *Redirect) updateRules(l4 *policy.L4Filter) revert.RevertFunc {
 	oldRules := r.rules
 	r.rules = make(policy.L7DataMap, len(l4.L7RulesPerEp))
