@@ -16,6 +16,8 @@ package loader
 
 import (
 	"context"
+	"fmt"
+	"os/exec"
 	"path"
 
 	"github.com/cilium/cilium/pkg/logging"
@@ -95,10 +97,16 @@ func reloadDatapath(ctx context.Context, ep endpoint, dirs *directoryInfo) error
 		}
 	} else {
 		if err := replaceDatapath(ctx, ep.InterfaceName(), objPath, symbolFromEndpoint); err != nil {
+			cmd := exec.Command("bpftool", "map", "show")
+			out, _ := cmd.CombinedOutput()
+			fmt.Println("~~~~~~~~~~~~~~~~~~", string(out))
+
 			scopedLog := ep.Logger(Subsystem).WithFields(logrus.Fields{
 				logfields.Path: objPath,
 				logfields.Veth: ep.InterfaceName(),
 			})
+
+			scopedLog.WithError(err).Warnf("foobar: %s", string(out))
 			scopedLog.WithError(err).Warn("JoinEP: Failed to load program")
 			return err
 		}
