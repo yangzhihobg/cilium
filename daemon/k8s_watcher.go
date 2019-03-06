@@ -36,6 +36,7 @@ import (
 	cilium_v2 "github.com/cilium/cilium/pkg/k8s/apis/cilium.io/v2"
 	clientset "github.com/cilium/cilium/pkg/k8s/client/clientset/versioned"
 	informer "github.com/cilium/cilium/pkg/k8s/client/informers/externalversions"
+	k8smetrics "github.com/cilium/cilium/pkg/k8s/metrics"
 	k8sUtils "github.com/cilium/cilium/pkg/k8s/utils"
 	"github.com/cilium/cilium/pkg/labels"
 	"github.com/cilium/cilium/pkg/loadbalancer"
@@ -242,6 +243,7 @@ func (*k8sMetrics) Observe(verb string, u url.URL, latency time.Duration) {
 
 func (*k8sMetrics) Increment(code string, method string, host string) {
 	metrics.KubernetesAPICalls.WithLabelValues(host, method, code).Inc()
+	k8smetrics.LastInteraction.Reset()
 }
 
 func init() {
@@ -293,6 +295,11 @@ func (d *Daemon) initK8sSubsystem() {
 	case <-time.After(cacheSyncTimeout):
 		log.Fatalf("Timed out waiting for pre-existing resources related to policy to be received; exiting")
 	}
+}
+
+func (d *Daemon) k8sEventReceived() {
+	metrics.EventTSK8s.SetToCurrentTime()
+	k8smetrics.LastInteraction.Reset()
 }
 
 // EnableK8sWatcher watches for policy, services and endpoint changes on the Kubernetes
@@ -355,7 +362,7 @@ func (d *Daemon) EnableK8sWatcher(queueSize uint) error {
 			0,
 			cache.ResourceEventHandlerFuncs{
 				AddFunc: func(obj interface{}) {
-					metrics.EventTSK8s.SetToCurrentTime()
+					d.k8sEventReceived()
 					if k8sNP := k8s.CopyObjToV1NetworkPolicy(obj); k8sNP != nil {
 						serKNPs.Enqueue(func() error {
 							err := d.addK8sNetworkPolicyV1(k8sNP)
@@ -365,7 +372,7 @@ func (d *Daemon) EnableK8sWatcher(queueSize uint) error {
 					}
 				},
 				UpdateFunc: func(oldObj, newObj interface{}) {
-					metrics.EventTSK8s.SetToCurrentTime()
+					d.k8sEventReceived()
 					if oldK8sNP := k8s.CopyObjToV1NetworkPolicy(oldObj); oldK8sNP != nil {
 						if newK8sNP := k8s.CopyObjToV1NetworkPolicy(newObj); newK8sNP != nil {
 							if k8s.EqualV1NetworkPolicy(oldK8sNP, newK8sNP) {
@@ -381,7 +388,7 @@ func (d *Daemon) EnableK8sWatcher(queueSize uint) error {
 					}
 				},
 				DeleteFunc: func(obj interface{}) {
-					metrics.EventTSK8s.SetToCurrentTime()
+					d.k8sEventReceived()
 					k8sNP := k8s.CopyObjToV1NetworkPolicy(obj)
 					if k8sNP == nil {
 						deletedObj, ok := obj.(cache.DeletedFinalStateUnknown)
@@ -418,7 +425,7 @@ func (d *Daemon) EnableK8sWatcher(queueSize uint) error {
 		0,
 		cache.ResourceEventHandlerFuncs{
 			AddFunc: func(obj interface{}) {
-				metrics.EventTSK8s.SetToCurrentTime()
+				d.k8sEventReceived()
 				if k8sSvc := k8s.CopyObjToV1Services(obj); k8sSvc != nil {
 					serSvcs.Enqueue(func() error {
 						err := d.addK8sServiceV1(k8sSvc)
@@ -428,7 +435,7 @@ func (d *Daemon) EnableK8sWatcher(queueSize uint) error {
 				}
 			},
 			UpdateFunc: func(oldObj, newObj interface{}) {
-				metrics.EventTSK8s.SetToCurrentTime()
+				d.k8sEventReceived()
 				if oldk8sSvc := k8s.CopyObjToV1Services(oldObj); oldk8sSvc != nil {
 					if newk8sSvc := k8s.CopyObjToV1Services(newObj); newk8sSvc != nil {
 						if k8s.EqualV1Services(oldk8sSvc, newk8sSvc) {
@@ -444,7 +451,7 @@ func (d *Daemon) EnableK8sWatcher(queueSize uint) error {
 				}
 			},
 			DeleteFunc: func(obj interface{}) {
-				metrics.EventTSK8s.SetToCurrentTime()
+				d.k8sEventReceived()
 				k8sSvc := k8s.CopyObjToV1Services(obj)
 				if k8sSvc == nil {
 					deletedObj, ok := obj.(cache.DeletedFinalStateUnknown)
@@ -482,7 +489,7 @@ func (d *Daemon) EnableK8sWatcher(queueSize uint) error {
 		0,
 		cache.ResourceEventHandlerFuncs{
 			AddFunc: func(obj interface{}) {
-				metrics.EventTSK8s.SetToCurrentTime()
+				d.k8sEventReceived()
 				if k8sEP := k8s.CopyObjToV1Endpoints(obj); k8sEP != nil {
 					serEps.Enqueue(func() error {
 						err := d.addK8sEndpointV1(k8sEP)
@@ -492,7 +499,7 @@ func (d *Daemon) EnableK8sWatcher(queueSize uint) error {
 				}
 			},
 			UpdateFunc: func(oldObj, newObj interface{}) {
-				metrics.EventTSK8s.SetToCurrentTime()
+				d.k8sEventReceived()
 				if oldk8sEP := k8s.CopyObjToV1Endpoints(oldObj); oldk8sEP != nil {
 					if newk8sEP := k8s.CopyObjToV1Endpoints(newObj); newk8sEP != nil {
 						if k8s.EqualV1Endpoints(oldk8sEP, newk8sEP) {
@@ -508,7 +515,7 @@ func (d *Daemon) EnableK8sWatcher(queueSize uint) error {
 				}
 			},
 			DeleteFunc: func(obj interface{}) {
-				metrics.EventTSK8s.SetToCurrentTime()
+				d.k8sEventReceived()
 				k8sEP := k8s.CopyObjToV1Endpoints(obj)
 				if k8sEP == nil {
 					deletedObj, ok := obj.(cache.DeletedFinalStateUnknown)
@@ -543,7 +550,7 @@ func (d *Daemon) EnableK8sWatcher(queueSize uint) error {
 			0,
 			cache.ResourceEventHandlerFuncs{
 				AddFunc: func(obj interface{}) {
-					metrics.EventTSK8s.SetToCurrentTime()
+					d.k8sEventReceived()
 					if k8sIngress := k8s.CopyObjToV1beta1Ingress(obj); k8sIngress != nil {
 						serIngresses.Enqueue(func() error {
 							err := d.addIngressV1beta1(k8sIngress)
@@ -553,7 +560,7 @@ func (d *Daemon) EnableK8sWatcher(queueSize uint) error {
 					}
 				},
 				UpdateFunc: func(oldObj, newObj interface{}) {
-					metrics.EventTSK8s.SetToCurrentTime()
+					d.k8sEventReceived()
 					if oldk8sIngress := k8s.CopyObjToV1beta1Ingress(oldObj); oldk8sIngress != nil {
 						if newk8sIngress := k8s.CopyObjToV1beta1Ingress(newObj); newk8sIngress != nil {
 							if k8s.EqualV1beta1Ingress(oldk8sIngress, newk8sIngress) {
@@ -569,7 +576,7 @@ func (d *Daemon) EnableK8sWatcher(queueSize uint) error {
 					}
 				},
 				DeleteFunc: func(obj interface{}) {
-					metrics.EventTSK8s.SetToCurrentTime()
+					d.k8sEventReceived()
 					k8sIngress := k8s.CopyObjToV1beta1Ingress(obj)
 					if k8sIngress == nil {
 						deletedObj, ok := obj.(cache.DeletedFinalStateUnknown)
@@ -612,7 +619,7 @@ func (d *Daemon) EnableK8sWatcher(queueSize uint) error {
 
 		ciliumV2Controller.AddEventHandler(cache.ResourceEventHandlerFuncs{
 			AddFunc: func(obj interface{}) {
-				metrics.EventTSK8s.SetToCurrentTime()
+				d.k8sEventReceived()
 				if cnp := k8s.CopyObjToV2CNP(obj); cnp != nil {
 					serCNPs.Enqueue(func() error {
 						if cnp.RequiresDerivative() {
@@ -625,7 +632,7 @@ func (d *Daemon) EnableK8sWatcher(queueSize uint) error {
 				}
 			},
 			UpdateFunc: func(oldObj, newObj interface{}) {
-				metrics.EventTSK8s.SetToCurrentTime()
+				d.k8sEventReceived()
 				if oldCNP := k8s.CopyObjToV2CNP(oldObj); oldCNP != nil {
 					if newCNP := k8s.CopyObjToV2CNP(newObj); newCNP != nil {
 						if k8s.EqualV2CNP(oldCNP, newCNP) {
@@ -645,7 +652,7 @@ func (d *Daemon) EnableK8sWatcher(queueSize uint) error {
 				}
 			},
 			DeleteFunc: func(obj interface{}) {
-				metrics.EventTSK8s.SetToCurrentTime()
+				d.k8sEventReceived()
 				cnp := k8s.CopyObjToV2CNP(obj)
 				if cnp == nil {
 					deletedObj, ok := obj.(cache.DeletedFinalStateUnknown)
@@ -680,7 +687,7 @@ func (d *Daemon) EnableK8sWatcher(queueSize uint) error {
 		0,
 		cache.ResourceEventHandlerFuncs{
 			AddFunc: func(obj interface{}) {
-				metrics.EventTSK8s.SetToCurrentTime()
+				d.k8sEventReceived()
 				if pod := k8s.CopyObjToV1Pod(obj); pod != nil {
 					serPods.Enqueue(func() error {
 						err := d.addK8sPodV1(pod)
@@ -690,7 +697,7 @@ func (d *Daemon) EnableK8sWatcher(queueSize uint) error {
 				}
 			},
 			UpdateFunc: func(oldObj, newObj interface{}) {
-				metrics.EventTSK8s.SetToCurrentTime()
+				d.k8sEventReceived()
 				if oldPod := k8s.CopyObjToV1Pod(oldObj); oldPod != nil {
 					if newPod := k8s.CopyObjToV1Pod(newObj); newPod != nil {
 						if k8s.EqualV1Pod(oldPod, newPod) {
@@ -706,7 +713,7 @@ func (d *Daemon) EnableK8sWatcher(queueSize uint) error {
 				}
 			},
 			DeleteFunc: func(obj interface{}) {
-				metrics.EventTSK8s.SetToCurrentTime()
+				d.k8sEventReceived()
 				if pod := k8s.CopyObjToV1Pod(obj); pod != nil {
 					serPods.Enqueue(func() error {
 						err := d.deleteK8sPodV1(pod)
@@ -728,7 +735,7 @@ func (d *Daemon) EnableK8sWatcher(queueSize uint) error {
 		0,
 		cache.ResourceEventHandlerFuncs{
 			AddFunc: func(obj interface{}) {
-				metrics.EventTSK8s.SetToCurrentTime()
+				d.k8sEventReceived()
 				if Node := k8s.CopyObjToV1Node(obj); Node != nil {
 					serNodes.Enqueue(func() error {
 						err := d.addK8sNodeV1(Node)
@@ -738,7 +745,7 @@ func (d *Daemon) EnableK8sWatcher(queueSize uint) error {
 				}
 			},
 			UpdateFunc: func(oldObj, newObj interface{}) {
-				metrics.EventTSK8s.SetToCurrentTime()
+				d.k8sEventReceived()
 				if oldNode := k8s.CopyObjToV1Node(oldObj); oldNode != nil {
 					if newNode := k8s.CopyObjToV1Node(newObj); newNode != nil {
 						if k8s.EqualV1Node(oldNode, newNode) {
@@ -754,7 +761,7 @@ func (d *Daemon) EnableK8sWatcher(queueSize uint) error {
 				}
 			},
 			DeleteFunc: func(obj interface{}) {
-				metrics.EventTSK8s.SetToCurrentTime()
+				d.k8sEventReceived()
 				node := k8s.CopyObjToV1Node(obj)
 				if node == nil {
 					deletedObj, ok := obj.(cache.DeletedFinalStateUnknown)
@@ -792,7 +799,7 @@ func (d *Daemon) EnableK8sWatcher(queueSize uint) error {
 			// DelFunc does not matter since, when a namespace is deleted, all
 			// pods belonging to that namespace are also deleted.
 			UpdateFunc: func(oldObj, newObj interface{}) {
-				metrics.EventTSK8s.SetToCurrentTime()
+				d.k8sEventReceived()
 				if oldNS := k8s.CopyObjToV1Namespace(oldObj); oldNS != nil {
 					if newNS := k8s.CopyObjToV1Namespace(newObj); newNS != nil {
 						if k8s.EqualV1Namespace(oldNS, newNS) {
