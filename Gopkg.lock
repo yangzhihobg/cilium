@@ -126,7 +126,7 @@
     "go/envoy/type/matcher",
   ]
   pruneopts = "NUT"
-  revision = "f5d68019af4f3a21d7d71bc5953da2154e768827"
+  revision = "529a626ce098095f3ade827b018639bbd3071fc7"
 
 [[projects]]
   digest = "1:623d36e1d9d7aa38d5c0b92ed0a19279b3847a6c287ffa3e328f9535a3bef17b"
@@ -841,11 +841,11 @@
   version = "v1.0.1"
 
 [[projects]]
-  digest = "1:520b28b82687f6e323e31d5fec1edda7e41e3157ac8fc66db7f8d765b9c15cbe"
+  digest = "1:159c36d31cd2915f1104d2051680b8ee9cc73549898d3a22dbed6c87486d738e"
   name = "github.com/miekg/dns"
   packages = ["."]
   pruneopts = "NUT"
-  revision = "c5da7a5e4896cb625a1b8e61988dced0032d0edb"
+  revision = "77b2eb00b557733c7022b5d2df85d54d858488eb"
   source = "github.com/cilium/dns"
 
 [[projects]]
@@ -1589,7 +1589,7 @@
   revision = "kubernetes-1.13.3"
 
 [[projects]]
-  digest = "1:1dd09943a44ac236806aaae16aa521cf43727eaa48b1bd409e5d7da884d8466a"
+  digest = "1:2e0db0993d1819519f385317e824e7b1211dc6aef62ff80acaaf1a0fa529dc6b"
   name = "k8s.io/client-go"
   packages = [
     "discovery",
@@ -1690,7 +1690,7 @@
     "util/retry",
   ]
   pruneopts = "NUT"
-  revision = "b5836377ae6c61ca4e81982fc253d1ef21a1ca87"
+  revision = "d6e8092c18ae2c82e6bbad0b04b89fa76b5e69d5"
   source = "https://github.com/cilium/client-go"
 
 [[projects]]
